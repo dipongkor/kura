@@ -55,27 +55,100 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-test-dummy-key-1234567890abcdefghijklmnopqrstuvwxyz' }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'dummy-google-api-key-for-testing' }}
       
-      - name: Generate diff coverage reports
+      - name: Generate diff coverage reports (each format separately)
         run: |
+          echo "Generating JSON report..."
           uv run diff-cover coverage.xml \
             --compare-branch=upstream-main \
-            --format json:diff-coverage.json \
-            --format html:diff-coverage.html \
-            --format markdown:diff-coverage.md || true
+            --format json:diff-coverage.json 2>&1 | tee json.log || true
           
+          echo "Generating HTML report..."
+          uv run diff-cover coverage.xml \
+            --compare-branch=upstream-main \
+            --format html:diff-coverage.html 2>&1 | tee html.log || true
+          
+          echo "Generating Markdown report..."
+          uv run diff-cover coverage.xml \
+            --compare-branch=upstream-main \
+            --format markdown:diff-coverage.md 2>&1 | tee markdown.log || true
+          
+          echo ""
           echo "Generated files:"
-          ls -lah diff-coverage.* coverage.xml 2>/dev/null || true
+          ls -lah diff-coverage.* coverage.xml 2>/dev/null || echo "Some files missing"
+          
+          echo ""
+          echo "Checking JSON file:"
+          if [ -f diff-coverage.json ]; then
+            echo "✓ JSON exists, size: $(stat -c%s diff-coverage.json 2>/dev/null || stat -f%z diff-coverage.json)"
+            cat diff-coverage.json
+          else
+            echo "✗ JSON file not created"
+            echo "JSON log:"
+            cat json.log
+          fi
+      
+      - name: Create fallback JSON if missing
+        run: |
+          if [ ! -f diff-coverage.json ]; then
+            echo "Creating fallback JSON from markdown..."
+            
+            # Try to extract data from markdown or logs
+            if [ -f diff-coverage.md ]; then
+              # Parse the markdown to create basic JSON
+              python3 << 'EOF'
+import json
+import re
+
+try:
+    with open('diff-coverage.md', 'r') as f:
+        content = f.read()
+    
+    # Try to extract metrics
+    total_match = re.search(r'Total:\s+(\d+)\s+lines?', content)
+    missing_match = re.search(r'Missing:\s+(\d+)\s+lines?', content)
+    coverage_match = re.search(r'Coverage:\s+([\d.]+)%', content)
+    
+    data = {
+        "report_name": "Diff Coverage",
+        "total_num_lines": int(total_match.group(1)) if total_match else 0,
+        "total_num_violations": int(missing_match.group(1)) if missing_match else 0,
+        "total_percent_covered": float(coverage_match.group(1)) if coverage_match else 0.0,
+        "source": "parsed_from_markdown"
+    }
+    
+    with open('diff-coverage.json', 'w') as f:
+        json.dump(data, f, indent=2)
+    
+    print("✓ Created JSON from markdown")
+except Exception as e:
+    # Create minimal JSON
+    data = {
+        "error": "Could not parse coverage data",
+        "message": str(e)
+    }
+    with open('diff-coverage.json', 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f"✗ Error: {e}")
+EOF
+            else
+              echo '{"error": "No coverage data available"}' > diff-coverage.json
+            fi
+          fi
+          
+          echo "Final JSON file:"
+          cat diff-coverage.json
+        continue-on-error: true
       
       - name: Parse coverage metrics
         id: metrics
         run: |
           if [ -f diff-coverage.json ]; then
             echo "Coverage JSON contents:"
-            cat diff-coverage.json | python3 -m json.tool
+            cat diff-coverage.json | python3 -m json.tool || cat diff-coverage.json
             
-            TOTAL=$(python3 -c "import json; data=json.load(open('diff-coverage.json')); print(data.get('total_num_lines', 'unknown'))")
-            MISSING=$(python3 -c "import json; data=json.load(open('diff-coverage.json')); print(data.get('total_num_violations', 'unknown'))")
-            COVERAGE=$(python3 -c "import json; data=json.load(open('diff-coverage.json')); print(data.get('total_percent_covered', 'unknown'))")
+            TOTAL=$(python3 -c "import json; data=json.load(open('diff-coverage.json')); print(data.get('total_num_lines', 'unknown'))" 2>/dev/null || echo "unknown")
+            MISSING=$(python3 -c "import json; data=json.load(open('diff-coverage.json')); print(data.get('total_num_violations', 'unknown'))" 2>/dev/null || echo "unknown")
+            COVERAGE=$(python3 -c "import json; data=json.load(open('diff-coverage.json')); print(data.get('total_percent_covered', 'unknown'))" 2>/dev/null || echo "unknown")
             
             echo "total_lines=$TOTAL" >> $GITHUB_OUTPUT
             echo "missing_lines=$MISSING" >> $GITHUB_OUTPUT
@@ -119,3 +192,4 @@ jobs:
             diff-coverage.json
             diff-coverage.md
             htmlcov/
+            *.log
