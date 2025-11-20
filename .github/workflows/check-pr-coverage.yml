@@ -55,21 +55,55 @@ jobs:
         run: uv pip install pytest-cov diff-cover coverage
       
       - name: Run tests with coverage
-        run: uv run pytest --cov=kura --cov-report=xml --cov-report=term -v
+        run: uv run pytest --cov=kura --cov-report=xml --cov-report=html --cov-report=term -v
         env:
-          # Use secrets if available, otherwise use dummy keys for testing
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-test-dummy-key-1234567890abcdefghijklmnopqrstuvwxyz' }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'dummy-google-api-key-for-testing' }}
       
-      - name: Generate diff coverage
+      - name: Verify coverage files
         run: |
+          echo "Checking for coverage files..."
+          ls -lah coverage.xml htmlcov/ || echo "Some coverage files missing"
+      
+      - name: Generate diff coverage reports
+        run: |
+          echo "Generating diff coverage reports..."
+          
+          # Try to generate all formats at once
           uv run diff-cover coverage.xml \
             --compare-branch=upstream-main \
-            --fail-under=${{ inputs.coverage_threshold }} \
             --format json:diff-coverage.json \
             --format html:diff-coverage.html \
-            --format markdown:diff-coverage.md
+            --format markdown:diff-coverage.md \
+            --fail-under=${{ inputs.coverage_threshold }} 2>&1 | tee diff-cover.log || echo "diff-cover completed with warnings/errors"
+          
+          # Check what was generated
+          echo ""
+          echo "Generated files:"
+          ls -lah diff-coverage.* 2>/dev/null || echo "No diff-coverage files found"
+          
+          # Create fallback files if needed
+          if [ ! -f diff-coverage.json ]; then
+            echo '{"error": "JSON report generation failed", "check": "diff-cover.log"}' > diff-coverage.json
+          fi
+          
+          if [ ! -f diff-coverage.md ]; then
+            echo "Markdown report not generated, creating from terminal output..."
+            uv run diff-cover coverage.xml --compare-branch=upstream-main > diff-coverage.md 2>&1 || echo "# Diff Coverage Report Generation Failed" > diff-coverage.md
+          fi
+          
+          if [ ! -f diff-coverage.html ]; then
+            echo "<html><body><h1>HTML report generation failed</h1></body></html>" > diff-coverage.html
+          fi
         continue-on-error: true
+      
+      - name: Display all generated files
+        run: |
+          echo "All files in current directory:"
+          ls -lah
+          echo ""
+          echo "Coverage files:"
+          ls -lah *.xml *.json *.html *.md htmlcov/ 2>/dev/null || echo "Some files missing"
       
       - name: Display results
         run: |
@@ -96,4 +130,5 @@ jobs:
             diff-coverage.html
             diff-coverage.json
             diff-coverage.md
+            diff-cover.log
             htmlcov/
