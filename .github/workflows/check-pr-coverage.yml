@@ -60,62 +60,88 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-test-dummy-key-1234567890abcdefghijklmnopqrstuvwxyz' }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'dummy-google-api-key-for-testing' }}
       
-      - name: Verify coverage files
+      - name: Generate diff coverage reports (ignore threshold for report generation)
         run: |
-          echo "Checking for coverage files..."
-          ls -lah coverage.xml htmlcov/ || echo "Some coverage files missing"
-      
-      - name: Generate diff coverage reports
-        run: |
-          echo "Generating diff coverage reports..."
+          echo "Generating diff coverage reports (without threshold check)..."
           
-          # Try to generate all formats at once
+          # Generate reports WITHOUT fail-under to ensure all formats are created
           uv run diff-cover coverage.xml \
             --compare-branch=upstream-main \
             --format json:diff-coverage.json \
             --format html:diff-coverage.html \
-            --format markdown:diff-coverage.md \
-            --fail-under=${{ inputs.coverage_threshold }} 2>&1 | tee diff-cover.log || echo "diff-cover completed with warnings/errors"
+            --format markdown:diff-coverage.md 2>&1 | tee diff-cover.log
           
-          # Check what was generated
           echo ""
-          echo "Generated files:"
-          ls -lah diff-coverage.* 2>/dev/null || echo "No diff-coverage files found"
-          
-          # Create fallback files if needed
-          if [ ! -f diff-coverage.json ]; then
-            echo '{"error": "JSON report generation failed", "check": "diff-cover.log"}' > diff-coverage.json
-          fi
-          
-          if [ ! -f diff-coverage.md ]; then
-            echo "Markdown report not generated, creating from terminal output..."
-            uv run diff-cover coverage.xml --compare-branch=upstream-main > diff-coverage.md 2>&1 || echo "# Diff Coverage Report Generation Failed" > diff-coverage.md
-          fi
-          
-          if [ ! -f diff-coverage.html ]; then
-            echo "<html><body><h1>HTML report generation failed</h1></body></html>" > diff-coverage.html
+          echo "Reports generated. Checking files..."
+          ls -lah diff-coverage.* 2>/dev/null || echo "Some reports missing"
+        continue-on-error: true
+      
+      - name: Check coverage threshold separately
+        id: coverage_check
+        run: |
+          echo "Checking if coverage meets threshold..."
+          if uv run diff-cover coverage.xml \
+              --compare-branch=upstream-main \
+              --fail-under=${{ inputs.coverage_threshold }} > threshold-check.log 2>&1; then
+            echo "result=passed" >> $GITHUB_OUTPUT
+            echo "✓ Coverage meets threshold of ${{ inputs.coverage_threshold }}%"
+          else
+            echo "result=failed" >> $GITHUB_OUTPUT
+            echo "✗ Coverage below threshold of ${{ inputs.coverage_threshold }}%"
+            cat threshold-check.log
           fi
         continue-on-error: true
       
-      - name: Display all generated files
+      - name: Parse coverage metrics
+        id: metrics
         run: |
-          echo "All files in current directory:"
-          ls -lah
-          echo ""
-          echo "Coverage files:"
-          ls -lah *.xml *.json *.html *.md htmlcov/ 2>/dev/null || echo "Some files missing"
+          if [ -f diff-coverage.json ]; then
+            TOTAL=$(jq -r '.total_num_lines // "unknown"' diff-coverage.json)
+            MISSING=$(jq -r '.total_num_violations // "unknown"' diff-coverage.json)
+            COVERAGE=$(jq -r '.total_percent_covered // "unknown"' diff-coverage.json)
+            
+            echo "total_lines=$TOTAL" >> $GITHUB_OUTPUT
+            echo "missing_lines=$MISSING" >> $GITHUB_OUTPUT
+            echo "coverage_percent=$COVERAGE" >> $GITHUB_OUTPUT
+          else
+            echo "total_lines=unknown" >> $GITHUB_OUTPUT
+            echo "missing_lines=unknown" >> $GITHUB_OUTPUT
+            echo "coverage_percent=unknown" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
       
       - name: Display results
         run: |
-          echo "## PR #${{ inputs.pr_number }} Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 PR #${{ inputs.pr_number }} Coverage Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Upstream Repository:** ${{ inputs.upstream_repo }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Coverage Threshold:** ${{ inputs.coverage_threshold }}%" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Add metrics if available
+          if [ "${{ steps.metrics.outputs.coverage_percent }}" != "unknown" ]; then
+            echo "### Summary" >> $GITHUB_STEP_SUMMARY
+            echo "- **Total Lines Changed:** ${{ steps.metrics.outputs.total_lines }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Lines Without Coverage:** ${{ steps.metrics.outputs.missing_lines }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Coverage:** ${{ steps.metrics.outputs.coverage_percent }}%" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Add threshold check result
+          if [ "${{ steps.coverage_check.outputs.result }}" = "passed" ]; then
+            echo "### ✅ Coverage Check: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Coverage Check: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Add detailed report
           if [ -f diff-coverage.md ]; then
             cat diff-coverage.md >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️ Diff coverage report not generated" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Detailed diff coverage report not available" >> $GITHUB_STEP_SUMMARY
           fi
+          
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Changed Files:" >> $GITHUB_STEP_SUMMARY
           git diff upstream-main --name-only >> $GITHUB_STEP_SUMMARY
@@ -131,4 +157,11 @@ jobs:
             diff-coverage.json
             diff-coverage.md
             diff-cover.log
+            threshold-check.log
             htmlcov/
+      
+      - name: Fail if coverage below threshold
+        if: steps.coverage_check.outputs.result == 'failed'
+        run: |
+          echo "::error::Coverage (${{ steps.metrics.outputs.coverage_percent }}%) is below the required threshold (${{ inputs.coverage_threshold }}%)"
+          exit 1
