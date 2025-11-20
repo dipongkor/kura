@@ -22,166 +22,45 @@ jobs:
         with:
           fetch-depth: 0
       
-      - name: Add upstream remote
+      - name: Add upstream remote and fetch PR
         run: |
           git remote add upstream https://github.com/${{ inputs.upstream_repo }}.git
-          git remote -v
-      
-      - name: Fetch PR from upstream
-        run: |
           git fetch upstream pull/${{ inputs.pr_number }}/head:pr-${{ inputs.pr_number }}
           git checkout pr-${{ inputs.pr_number }}
-      
-      - name: Fetch main branch from upstream
-        run: git fetch upstream main:upstream-main
+          git fetch upstream main:upstream-main
       
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
       
-      - name: Set up Python
-        run: uv python install 3.9
-      
-      - name: Install the project
-        run: uv sync --all-extras --dev
-      
-      - name: Install coverage tools
-        run: uv pip install pytest-cov diff-cover coverage
+      - name: Set up Python and install dependencies
+        run: |
+          uv python install 3.9
+          uv sync --all-extras --dev
+          uv pip install pytest-cov diff-cover
       
       - name: Run tests with coverage
-        run: uv run pytest --cov=kura --cov-report=xml --cov-report=html --cov-report=term -v
+        run: uv run pytest --cov=kura --cov-report=xml --cov-report=html -v
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-test-dummy-key-1234567890abcdefghijklmnopqrstuvwxyz' }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'dummy-google-api-key-for-testing' }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-test-dummy-key' }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'dummy-key' }}
       
-      - name: Generate diff coverage reports (each format separately)
+      - name: Generate diff coverage reports
         run: |
-          echo "Generating JSON report..."
           uv run diff-cover coverage.xml \
             --compare-branch=upstream-main \
-            --format json:diff-coverage.json 2>&1 | tee json.log || true
-          
-          echo "Generating HTML report..."
-          uv run diff-cover coverage.xml \
-            --compare-branch=upstream-main \
-            --format html:diff-coverage.html 2>&1 | tee html.log || true
-          
-          echo "Generating Markdown report..."
-          uv run diff-cover coverage.xml \
-            --compare-branch=upstream-main \
-            --format markdown:diff-coverage.md 2>&1 | tee markdown.log || true
-          
-          echo ""
-          echo "Generated files:"
-          ls -lah diff-coverage.* coverage.xml 2>/dev/null || echo "Some files missing"
-          
-          echo ""
-          echo "Checking JSON file:"
-          if [ -f diff-coverage.json ]; then
-            echo "✓ JSON exists, size: $(stat -c%s diff-coverage.json 2>/dev/null || stat -f%z diff-coverage.json)"
-            cat diff-coverage.json
-          else
-            echo "✗ JSON file not created"
-            echo "JSON log:"
-            cat json.log
-          fi
+            --format json:diff-coverage.json \
+            --format html:diff-coverage.html \
+            --format markdown:diff-coverage.md || true
       
-      - name: Create fallback JSON if missing
-        run: |
-          if [ ! -f diff-coverage.json ]; then
-            echo "Creating fallback JSON from markdown..."
-            
-            # Try to extract data from markdown or logs
-            if [ -f diff-coverage.md ]; then
-              # Parse the markdown to create basic JSON
-              python3 << 'EOF'
-import json
-import re
-
-try:
-    with open('diff-coverage.md', 'r') as f:
-        content = f.read()
-    
-    # Try to extract metrics
-    total_match = re.search(r'Total:\s+(\d+)\s+lines?', content)
-    missing_match = re.search(r'Missing:\s+(\d+)\s+lines?', content)
-    coverage_match = re.search(r'Coverage:\s+([\d.]+)%', content)
-    
-    data = {
-        "report_name": "Diff Coverage",
-        "total_num_lines": int(total_match.group(1)) if total_match else 0,
-        "total_num_violations": int(missing_match.group(1)) if missing_match else 0,
-        "total_percent_covered": float(coverage_match.group(1)) if coverage_match else 0.0,
-        "source": "parsed_from_markdown"
-    }
-    
-    with open('diff-coverage.json', 'w') as f:
-        json.dump(data, f, indent=2)
-    
-    print("✓ Created JSON from markdown")
-except Exception as e:
-    # Create minimal JSON
-    data = {
-        "error": "Could not parse coverage data",
-        "message": str(e)
-    }
-    with open('diff-coverage.json', 'w') as f:
-        json.dump(data, f, indent=2)
-    print(f"✗ Error: {e}")
-EOF
-            else
-              echo '{"error": "No coverage data available"}' > diff-coverage.json
-            fi
-          fi
-          
-          echo "Final JSON file:"
-          cat diff-coverage.json
-        continue-on-error: true
-      
-      - name: Parse coverage metrics
-        id: metrics
-        run: |
-          if [ -f diff-coverage.json ]; then
-            echo "Coverage JSON contents:"
-            cat diff-coverage.json | python3 -m json.tool || cat diff-coverage.json
-            
-            TOTAL=$(python3 -c "import json; data=json.load(open('diff-coverage.json')); print(data.get('total_num_lines', 'unknown'))" 2>/dev/null || echo "unknown")
-            MISSING=$(python3 -c "import json; data=json.load(open('diff-coverage.json')); print(data.get('total_num_violations', 'unknown'))" 2>/dev/null || echo "unknown")
-            COVERAGE=$(python3 -c "import json; data=json.load(open('diff-coverage.json')); print(data.get('total_percent_covered', 'unknown'))" 2>/dev/null || echo "unknown")
-            
-            echo "total_lines=$TOTAL" >> $GITHUB_OUTPUT
-            echo "missing_lines=$MISSING" >> $GITHUB_OUTPUT
-            echo "coverage_percent=$COVERAGE" >> $GITHUB_OUTPUT
-          fi
-        continue-on-error: true
-      
-      - name: Display results
+      - name: Show results in summary
         run: |
           echo "## 📊 PR #${{ inputs.pr_number }} Coverage Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Upstream Repository:** ${{ inputs.upstream_repo }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ steps.metrics.outputs.coverage_percent }}" != "unknown" ] && [ -n "${{ steps.metrics.outputs.coverage_percent }}" ]; then
-            echo "### Summary" >> $GITHUB_STEP_SUMMARY
-            echo "- **Total Lines Changed:** ${{ steps.metrics.outputs.total_lines }}" >> $GITHUB_STEP_SUMMARY
-            echo "- **Lines Without Coverage:** ${{ steps.metrics.outputs.missing_lines }}" >> $GITHUB_STEP_SUMMARY
-            echo "- **Coverage:** ${{ steps.metrics.outputs.coverage_percent }}%" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          if [ -f diff-coverage.md ]; then
-            cat diff-coverage.md >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ Detailed diff coverage report not available" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Changed Files:" >> $GITHUB_STEP_SUMMARY
-          git diff upstream-main --name-only >> $GITHUB_STEP_SUMMARY
+          cat diff-coverage.md >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Report not available" >> $GITHUB_STEP_SUMMARY
       
-      - name: Upload artifacts
+      - name: Upload all coverage reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -192,4 +71,3 @@ EOF
             diff-coverage.json
             diff-coverage.md
             htmlcov/
-            *.log
