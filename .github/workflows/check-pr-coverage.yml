@@ -7,6 +7,11 @@ on:
         description: 'PR number to check'
         required: true
         type: number
+      upstream_repo:
+        description: 'Upstream repository (owner/repo)'
+        required: true
+        type: string
+        default: 'original-owner/original-repo'  # Replace with actual upstream
       coverage_threshold:
         description: 'Minimum coverage percentage'
         required: false
@@ -18,18 +23,23 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
+      - name: Checkout your fork
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
       
-      - name: Fetch PR
+      - name: Add upstream remote
         run: |
-          git fetch origin pull/${{ inputs.pr_number }}/head:pr-${{ inputs.pr_number }}
+          git remote add upstream https://github.com/${{ inputs.upstream_repo }}.git
+          git remote -v
+      
+      - name: Fetch PR from upstream
+        run: |
+          git fetch upstream pull/${{ inputs.pr_number }}/head:pr-${{ inputs.pr_number }}
           git checkout pr-${{ inputs.pr_number }}
       
-      - name: Fetch main branch
-        run: git fetch origin main:main
+      - name: Fetch main branch from upstream
+        run: git fetch upstream main:upstream-main
       
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -54,7 +64,7 @@ jobs:
       - name: Generate diff coverage
         run: |
           uv run diff-cover coverage.xml \
-            --compare-branch=main \
+            --compare-branch=upstream-main \
             --fail-under=${{ inputs.coverage_threshold }} \
             --format json:diff-coverage.json \
             --format html:diff-coverage.html \
@@ -64,10 +74,12 @@ jobs:
         run: |
           echo "## PR #${{ inputs.pr_number }} Coverage Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Upstream Repository:** ${{ inputs.upstream_repo }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           cat diff-coverage.md >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Changed Files:" >> $GITHUB_STEP_SUMMARY
-          git diff main --name-only >> $GITHUB_STEP_SUMMARY
+          git diff upstream-main --name-only >> $GITHUB_STEP_SUMMARY
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
