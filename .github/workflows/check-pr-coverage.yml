@@ -11,7 +11,7 @@ on:
         description: 'Upstream repository (owner/repo)'
         required: true
         type: string
-        default: 'original-owner/original-repo'  # Replace with actual upstream
+        default: '567-labs/kura'  # Replace with actual upstream
       coverage_threshold:
         description: 'Minimum coverage percentage'
         required: false
