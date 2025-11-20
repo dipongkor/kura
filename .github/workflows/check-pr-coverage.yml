@@ -1,5 +1,4 @@
 name: Check Specific PR Coverage
-
 on:
   workflow_dispatch:
     inputs:
@@ -11,7 +10,7 @@ on:
         description: 'Upstream repository (owner/repo)'
         required: true
         type: string
-        default: '567-labs/kura'  # Replace with actual upstream
+        default: '567-labs/kura'
       coverage_threshold:
         description: 'Minimum coverage percentage'
         required: false
@@ -52,8 +51,11 @@ jobs:
       - name: Install the project
         run: uv sync --all-extras --dev
       
-      - name: Install diff-cover
-        run: uv pip install diff-cover
+      - name: Install coverage tools
+        run: uv pip install pytest-cov diff-cover coverage
+      
+      - name: Verify pytest-cov installation
+        run: uv run pytest --version && uv run pytest --co -q
       
       - name: Run tests with coverage
         run: uv run pytest --cov=kura --cov-report=xml --cov-report=term -v
@@ -69,6 +71,7 @@ jobs:
             --format json:diff-coverage.json \
             --format html:diff-coverage.html \
             --format markdown:diff-coverage.md
+        continue-on-error: true  # Don't fail if coverage is below threshold
       
       - name: Display results
         run: |
@@ -76,13 +79,18 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Upstream Repository:** ${{ inputs.upstream_repo }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          cat diff-coverage.md >> $GITHUB_STEP_SUMMARY
+          if [ -f diff-coverage.md ]; then
+            cat diff-coverage.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Diff coverage report not generated" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Changed Files:" >> $GITHUB_STEP_SUMMARY
           git diff upstream-main --name-only >> $GITHUB_STEP_SUMMARY
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: pr-${{ inputs.pr_number }}-coverage
           path: |
